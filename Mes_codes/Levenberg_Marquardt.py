@@ -40,8 +40,13 @@ class Robot:
             self.limits = np.array(limits)
 
 
-def inverseKinematic6D(robot, target_T, init_epsilon=0.1, max_iter=150):
+def inverseKinematic6D(robot, target_T, init_epsilon=0.1, max_iter=150 , k=0.01):
     num = robot.joint_nombre
+    q_max = robot.limits[:,1]
+    q_min = robot.limits[:,0]
+    q_moy = (q_max + q_min) / 2
+    q_2 = (q_max - q_min)**2
+    
     # Initialisation au centre des limites articulaires
     estimation = np.mean(robot.limits, axis=1)
     
@@ -109,8 +114,17 @@ def inverseKinematic6D(robot, target_T, init_epsilon=0.1, max_iter=150):
         b = JT @ error
         dq = np.linalg.solve(A, b)
         
+        #nulle space 
+        J_inv = np.linalg.solve(A,JT)
+        nulle_space = np.eye(num) - J_inv @ J
+
+        #minimisation des angles avec l'algorithme du radians 
+        grad = 2 * (estimation - q_moy)/q_2
+        dq_grad = -k * grad       
+        dq_nul = nulle_space @ dq_grad
+        
         # --- Mise à jour et Clamping ---
-        estimation += dq
+        estimation += dq + dq_nul
         estimation = np.clip(estimation, robot.limits[:, 0], robot.limits[:, 1])
         
     return estimation
