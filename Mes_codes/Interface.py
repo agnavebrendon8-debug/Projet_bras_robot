@@ -1,7 +1,8 @@
 import sys
 import numpy as np
 from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSlider, QLabel, QComboBox, QDoubleSpinBox, QPushButton, QGridLayout, QGroupBox, QStackedWidget, QStatusBar
-from PyQt5.QtCore import Qt, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import Qt, pyqtSignal, pyqtSlot , QObject
+
 
 # Intégration de Matplotlib dans PyQt5
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -13,6 +14,8 @@ import Leven_Marq as LM
 import cv2
 from PyQt5.QtCore import QThread, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QImage, QPixmap
+
+import Transmission as tr
 
 
 
@@ -89,6 +92,42 @@ class MTD3DCanvas(FigureCanvas):
         self.robot_line.set_3d_properties(pts[:, 2])
         self.draw_idle() # Rafraîchissement asynchrone ultra-rapide
 
+
+
+class QDoubleSlider(QSlider):
+    """Un QSlider personnalisé qui accepte et retourne des valeurs flottantes"""
+    # Crée un signal personnalisé qui envoie un float au lieu d'un int
+    doubleValueChanged = pyqtSignal(float)
+
+    def __init__(self, orientation, parent=None, decimals=2):
+        super().__init__(orientation, parent)
+        self.decimals = decimals
+        self.factor = 10 ** self.decimals
+        self.valueChanged.connect(self.on_value_changed)
+
+    def on_value_changed(self, value):
+        # Convertit l'entier interne en float haute précision
+        self.doubleValueChanged.emit(value / self.factor)
+
+    def setFloatRange(self, min_val, max_val):
+        self.setRange(int(min_val * self.factor), int(max_val * self.factor))
+
+    def floatValue(self):
+        return self.value() / self.factor
+
+    def setFloatValue(self, value):
+        self.setValue(int(value * self.factor))
+        
+    def floatMinimum(self):
+        """Retourne la borne minimale en float pour le clamping"""
+        return self.minimum() / self.factor
+
+    def floatMaximum(self):
+        """Retourne la borne maximale en float pour le clamping"""
+        return self.maximum() / self.factor    
+    
+
+
 class RobotControllerSignals(QWidget):
     """Classe dédiée à la gestion des signaux pour la communication avec le robot"""
     angles_changed = pyqtSignal(list)       
@@ -137,37 +176,39 @@ class RobotControlGUI(QMainWindow):
         sliders_grid = QGridLayout()
         sliders_grid.setSpacing(8)
         
+        
         self.sliders = []
         self.angle_labels = []
-        limites_axes = [(-180, 180), (-90, 90), (-120, 120), (-180, 180), (-110, 110)]
-
+        limites_axes = [(-180, 180), (-180, 180), (-180, 180), (-180, 180), (-180, 180)]
+        
         for i in range(5):
-            # Calcul de la ligne et de la colonne pour compacter l'espace (2 axes par ligne)
             row_idx = i // 2
-            col_idx = (i % 2) * 3 # Décale de 3 sous-colonnes (Label, Slider, Valeur)
+            col_idx = (i % 2) * 3 
             
             lbl_name = QLabel(f"<b>A{i+1}:</b>")
             lbl_name.setFixedWidth(30)
-            
-            slider = QSlider(Qt.Horizontal)
-            slider.setRange(limites_axes[i][0], limites_axes[i][1])
-            slider.setValue(0)
-            slider.setFixedHeight(18) # Rendu plus fin
-            
-            lbl_val = QLabel("0°")
-            lbl_val.setFixedWidth(35)
+                
+            # Utilisation du nouveau Slider flottant
+            slider = QDoubleSlider(Qt.Horizontal, decimals=2)
+            slider.setFloatRange(limites_axes[i][0], limites_axes[i][1])
+            slider.setFloatValue(0.0)
+            slider.setFixedHeight(18) 
+                
+            lbl_val = QLabel("0.00°") # Format d'affichage étendu
+            lbl_val.setFixedWidth(45) # Élargi pour les décimales
             lbl_val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            
-            # Ajout à la grille compacte
+                
             sliders_grid.addWidget(lbl_name, row_idx, col_idx)
             sliders_grid.addWidget(slider, row_idx, col_idx + 1)
             sliders_grid.addWidget(lbl_val, row_idx, col_idx + 2)
-            
+                
             self.sliders.append(slider)
             self.angle_labels.append(lbl_val)
 
+
         # Pour le 5ème axe (Axe 5), on le fait s'étendre sur la deuxième moitié ou on le centre
         # Ici il occupe naturellement la ligne 2, colonne de gauche. On peut mettre le bouton Home à sa droite !
+        
         self.btn_home = QPushButton("Home")
         self.btn_home.setFixedHeight(24)
         sliders_grid.addWidget(self.btn_home, 2, 4, 1, 2) # Place vacante à côté de l'Axe 5
@@ -249,10 +290,12 @@ class RobotControlGUI(QMainWindow):
         self.lbl_webcam.setStyleSheet("background-color: #222831; border: 1px solid #3a3a44; min-height: 200px;")
         right_panel.addWidget(self.lbl_webcam)
 
-
+        self.is_animating = False 
+        
     def connect_events(self):
         for idx, slider in enumerate(self.sliders):
-            slider.valueChanged.connect(lambda val, i=idx: self.on_joint_slider_moved(i, val))
+            # Attention : on utilise doubleValueChanged au lieu de valueChanged
+            slider.doubleValueChanged.connect(lambda val, i=idx: self.on_joint_slider_moved(i, val))
         
         self.combo_tool.currentIndexChanged.connect(self.tool_stack.setCurrentIndex)
         self.btn_home.clicked.connect(self.reset_to_home)
@@ -271,10 +314,17 @@ class RobotControlGUI(QMainWindow):
     # LOGIQUE DES pyqtSLOTS ET ENVOI DE DONNÉES
     # ==========================================
     def on_joint_slider_moved(self, index, value):
-        self.angle_labels[index].setText(f"{value}°")
-        current_angles = [s.value() for s in self.sliders]
-        self.signals.angles_changed.emit(current_angles)
+        """Déclenché quand l'utilisateur bouge le slider ET par l'animation"""
+        self.angle_labels[index].setText(f"{value:.2f}°")
+        
+        if hasattr(self, 'is_animating') and not self.is_animating:
+            # Plus besoin de tricher, on lit directement les floats réels
+            self.current_robot_angles = np.array([np.deg2rad(s.floatValue()) for s in self.sliders])
+            
+        current_angles_deg = [s.floatValue() for s in self.sliders]
+        self.signals.angles_changed.emit(current_angles_deg)
         self.updatePosition()
+
 
     @pyqtSlot(QImage)
     def update_webcam_frame(self, qt_image):
@@ -372,51 +422,151 @@ class RobotControlGUI(QMainWindow):
     # ==========================================
     # CALCULS CINÉMATIQUES & RAFRAÎCHISSEMENT 3D
     # ==========================================
+        # Dans le __init__ de votre RobotControlGUI, pensez à initialiser :
+    # self.current_robot_angles = np.zeros(5) 
+    # self.is_animating = False
+
     def updateSlider(self):
         try:
+            # 1. FIX SÉCURITÉ & VERROU
+            self.btn_move_xyz.setEnabled(False)
+            self.is_animating = True
+            self.statusBar.showMessage("⏳ Calcul et exécution de la trajectoire en cours...")
+
+            # Récupération de la cible cartésienne depuis l'IHM
             x = float(self.spins['X'].value())
             y = float(self.spins['Y'].value())
             z = float(self.spins['Z'].value())
             pitch = np.deg2rad(float(self.spins['Pitch'].value()))
             roll = np.deg2rad(float(self.spins['Roll'].value()))
             
-            c_p, s_p = np.cos(pitch), np.sin(pitch)
-            c_r, s_r = np.cos(roll), np.sin(roll)
+            cp, sp = np.cos(pitch), np.sin(pitch)
+            cr, sr = np.cos(roll), np.sin(roll)
             
             T_target = np.array([
-                [c_p * c_r, -s_r,  s_p * c_r, x],
-                [c_p * s_r,  c_r,  s_p * s_r, y],
-                [-s_p,       0,     c_p,       z],
-                [0,          0,     0,         1]
-            ])
+                [cr, -sr * cp,  sr * sp, x],
+                [sr,  cr * cp, -cr * sp, y],
+                [0,   sp,       cp,      z],
+                [0,   0,        0,       1]
+            ], dtype=np.float64)
+            
+            # T_target = np.array([
+            #     [c_p * c_r, -s_r,  s_p * c_r, x],
+            #     [c_p * s_r,  c_r,  s_p * s_r, y],
+            #     [-s_p,       0,     c_p,       z],
+               
+            # ])
            
-            angles_rad = LM.inverseKinematic6D(self.robot, T_target)
+            # 2. Calcul des angles cibles par le MGI (Haute précision)
+            angles_cible = LM.inverseKinematic6D(self.robot, T_target)
             
-            for idx, slider in enumerate(self.sliders):
-                if idx < len(angles_rad):
-                    slider.blockSignals(True)
-                    angle_deg = int(np.rad2deg(angles_rad[idx]))
-                    angle_clamped = max(slider.minimum(), min(slider.maximum(), angle_deg))
-                    slider.setValue(angle_clamped)
-                    self.angle_labels[idx].setText(f"{angle_clamped}°")
-                    slider.blockSignals(False)
+            # 3. FIX SYNCHRO CRITIQUE : Si self.current_robot_angles n'existe pas ou si l'utilisateur
+            # a bougé un slider manuellement avant, on se recalibre sur les sliders.
+            # Sinon, on utilise la mémoire float haute précision pour éviter les sauts de configuration !
             
-            # Après avoir mis à jour les sliders, on rafraîchit l'animation 3D
-            self.draw_robot_animation(angles_rad)
+            if not hasattr(self, 'current_robot_angles') or self.current_robot_angles is None:
+                self.current_robot_angles = np.array([np.deg2rad(float(s.floatValue())) for s in self.sliders]) #np.rad2deg(self.robot_real_angle)
+            
+            # 4. Calcul de la distance articulaire maximale (en degrés)
+            distance_max_deg = np.rad2deg(np.max(np.abs(angles_cible - self.current_robot_angles)))
+            
+            # Si le robot est déjà au point souhaité (mouvement infime), on stoppe de suite sans saut
+            if distance_max_deg < 0.1:
+                self.appliquer_angles_ihm(angles_cible)
+                self.btn_move_xyz.setEnabled(True)
+                self.is_animating = False
+                self.statusBar.showMessage("✅ Le robot est déjà à la position cible.")
+                return
+
+            # 5. Planification de la trajectoire pas à pas
+            vitesse_deg_s = 45.0  
+            duree_totale_s = distance_max_deg / vitesse_deg_s
+            
+            frequence_hz = 40 
+            self.anim_total_steps = int(duree_totale_s * frequence_hz)
+            self.anim_total_steps = max(5, self.anim_total_steps) 
+            
+            # Calcul de l'incrément linéaire à partir de la position REELLE actuelle
+            self.anim_step_increment = (angles_cible - self.current_robot_angles) / self.anim_total_steps
+            
+            self.anim_current_step = 0
+            
+            if hasattr(self, 'anim_timer') and self.anim_timer.isActive():
+                self.anim_timer.stop()
+                
+            from PyQt5.QtCore import QTimer
+            self.anim_timer = QTimer(self)
+            self.anim_timer.timeout.connect(self.executer_pas_trajectoire)
+            self.anim_timer.start(int(1000 / frequence_hz))
                     
         except Exception as e:
-            self.statusBar.showMessage(f"⚠️ Erreur MGI : {str(e)}")
+            self.statusBar.showMessage(f"⚠️ Erreur MGI ou Trajectoire : {str(e)}")
+            self.btn_move_xyz.setEnabled(True)
+            self.is_animating = False
+
+    def executer_pas_trajectoire(self):
+        """Fait progresser les articulations à chaque tick du Timer"""
+        try:
+            if self.anim_current_step < self.anim_total_steps:
+                # Progression cumulative en float haute précision
+                self.current_robot_angles += self.anim_step_increment
+                self.signals.angles_changed.emit([angle for angle in self.current_robot_angles])
+                self.appliquer_angles_ihm(self.current_robot_angles) # self.robot_real_angle
+                self.anim_current_step += 1
+            else:
+                # ARRIVÉE À DESTINATION
+                self.anim_timer.stop()
+                self.is_animating = False
+                self.btn_move_xyz.setEnabled(True)
+                self.statusBar.showMessage("✅ Trajectoire cartésienne exécutée avec succès.")
+
+        except Exception as e:
+            if hasattr(self, 'anim_timer'):
+                self.anim_timer.stop()
+            self.is_animating = False
+            self.btn_move_xyz.setEnabled(True)
+            print(f"Erreur pas trajectoire: {e}")
+
+    def appliquer_angles_ihm(self, angles_rad):
+        """Met à jour graphiquement l'IHM avec une fluidité absolue sans aucune perte d'arrondi"""
+        self.current_robot_angles = np.array(angles_rad).copy()
+
+        if hasattr(self.robot, 'current_angle'):
+            self.robot.current_angle = angles_rad
+
+        for idx, slider in enumerate(self.sliders):
+            if idx < len(angles_rad):
+                slider.blockSignals(True)
+                angle_deg = np.rad2deg(angles_rad[idx])
+                
+                angle_clamped = max(slider.floatMinimum(), min(slider.floatMaximum(), angle_deg))
+                
+                # Injection directe de la valeur float brute
+                slider.setFloatValue(angle_clamped)
+                self.angle_labels[idx].setText(f"{slider.floatValue():.2f}°")
+                slider.blockSignals(False)
+        
+        self.draw_robot_animation(angles_rad)
+
 
     def updatePosition(self):
-        try:
-            current_angles_rad = [np.deg2rad(float(s.value())) for s in self.sliders]
+        if hasattr(self, 'is_animating') and self.is_animating:
+            return
             
-            # Récupération de la matrice finale pour l'IHM
+        try:
+            # Lecture directe en float
+            current_angles_rad = [np.deg2rad(s.floatValue()) for s in self.sliders]
+            
             T_ee = LM.ForwardKinematic(self.robot, current_angles_rad, joint=-1)
             
             X, Y, Z = T_ee[0, 3], T_ee[1, 3], T_ee[2, 3]
-            pitch_rad = -np.arcsin(T_ee[2, 0])
-            roll_rad = np.arctan2(T_ee[2, 1], T_ee[2, 2])
+            # pitch_rad = -np.arcsin(T_ee[2, 0])
+            # roll_rad = np.arctan2(T_ee[2, 1], T_ee[2, 2])
+            
+            pitch_rad = np.arctan2(T_ee[2, 1], T_ee[2, 2])
+            
+            # L'angle roll s'extrait de la première colonne qui dépend du cos/sin de teta
+            roll_rad = np.arctan2(T_ee[1, 0], T_ee[0, 0])
             
             for spin in self.spins.values():
                 spin.blockSignals(True)
@@ -424,18 +574,19 @@ class RobotControlGUI(QMainWindow):
             self.spins["X"].setValue(X)
             self.spins["Y"].setValue(Y)
             self.spins["Z"].setValue(Z)
-            self.spins["Pitch"].setValue(np.clip(np.rad2deg(pitch_rad), -90, 90))
+            self.spins["Pitch"].setValue(np.clip(np.rad2deg(pitch_rad), -180, 180))
             self.spins["Roll"].setValue(np.clip(np.rad2deg(roll_rad), -180, 180))
+            
             
             for spin in self.spins.values():
                 spin.blockSignals(False)
             
-            # Mise à jour du graphique 3D en envoyant les angles actuels
             self.draw_robot_animation(current_angles_rad)
                 
         except Exception as e:
             self.statusBar.showMessage(f"⚠️ Erreur MGD : {str(e)}")
-
+            
+            
     def draw_robot_animation(self, angles):
         """Récupère les matrices de chaque articulation et envoie la liste des points 3D au Canvas"""
         try:
@@ -480,21 +631,30 @@ class RobotControlGUI(QMainWindow):
             QStatusBar { background-color: #222831; color: #00adb5; }
         """)
 
+
+
+
+
 if __name__ == "__main__":
     nb_joint = 5
     phis = [np.pi/2, 0, 0, np.pi/2, 0]
-    r = [0, 200, 100, 0, 40]
-    d = [50, 0, 0, 20, 0]
+    r = [0, 200, 100, 0, 10]
+    d = [50, 0, 0, 10, 0]
 
+    # 1. Modèle mathématique
     robot5DoF = LM.Robot(nb_joint, phis, r, d)
     
     app = QApplication(sys.argv)
+    
+    # 2. Fenêtre Graphique
     gui = RobotControlGUI(robot=robot5DoF)
+    
+    # 3. Pont Matériel (Modifiez "COM3" ou "/dev/ttyUSB0" selon votre système)
+    hardware = tr.RobotHardwareBridge(port="COM3", gui=gui , baudrate=115200)
+    
     gui.show()
-    sys.exit(app.exec_())
-
-
-
-# Insérer ces lignes dans votre méthode init_ui() [dans le panneau droit ou sous l'effecteur] :
-# Insérer ces lignes à la fin de votre méthode connect_events() :
-# Insérer cette ligne dans votre méthode trigger_emergency() :
+    
+    # Sécurité à la fermeture
+    sys.exit_on_close = app.exec_()
+    hardware.close()
+    sys.exit(sys.exit_on_close)
