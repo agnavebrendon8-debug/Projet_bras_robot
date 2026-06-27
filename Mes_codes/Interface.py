@@ -183,7 +183,7 @@ class RobotControlGUI(QMainWindow):
         self.canvas_3d = MTD3DCanvas(self, width=5, height=4, dpi=100)
         
         # Option B : Le nouveau simulateur PyBullet (Donnez le chemin de votre fichier .urdf)
-        self.canvas_pybullet = PyBulletCanvas(self, urdf_path="chemin/vers/votre_robot.urdf")
+        self.canvas_pybullet = PyBulletCanvas(self, urdf_path="robot5DoF.urdf")
         
         self.view_stack.addWidget(self.canvas_3d)       # Index 0
         self.view_stack.addWidget(self.canvas_pybullet)  # Index 1
