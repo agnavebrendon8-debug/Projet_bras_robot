@@ -2,6 +2,7 @@ import sys
 import numpy as np
 from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSlider, QLabel, QComboBox, QDoubleSpinBox, QPushButton, QGridLayout, QGroupBox, QStackedWidget, QStatusBar
 from PyQt5.QtCore import Qt, pyqtSignal, pyqtSlot , QObject
+from robot3D_visualisation import PyBulletCanvas
 
 
 # Intégration de Matplotlib dans PyQt5
@@ -166,8 +167,29 @@ class RobotControlGUI(QMainWindow):
         control_layout = QVBoxLayout(self.control_group)
         
         # 1. ZONE D'ANIMATION (Haut Gauche)
+        # --- NOUVEAU : SÉLECTEUR DE MODE D'AFFICHAGE ---
+        
+        view_select_layout = QHBoxLayout()
+        view_select_layout.addWidget(QLabel("<b>Mode d'affichage 3D :</b>"))
+        self.combo_view_mode = QComboBox()
+        self.combo_view_mode.addItems(["Squelette Matplotlib (Rapide)", "Modèle URDF PyBullet (Réaliste)"])
+        view_select_layout.addWidget(self.combo_view_mode)
+        control_layout.addLayout(view_select_layout)
+
+        # --- NOUVEAU : STACKED WIDGET POUR LES DEUX OPTIONS ---
+        self.view_stack = QStackedWidget()
+        
+        # Option A : Votre canevas Matplotlib existant
         self.canvas_3d = MTD3DCanvas(self, width=5, height=4, dpi=100)
-        control_layout.addWidget(self.canvas_3d, stretch=3) # Donne de l'importance à la 3D
+        
+        # Option B : Le nouveau simulateur PyBullet (Donnez le chemin de votre fichier .urdf)
+        self.canvas_pybullet = PyBulletCanvas(self, urdf_path="chemin/vers/votre_robot.urdf")
+        
+        self.view_stack.addWidget(self.canvas_3d)       # Index 0
+        self.view_stack.addWidget(self.canvas_pybullet)  # Index 1
+        
+        control_layout.addWidget(self.view_stack, stretch=3)
+                
         
         # Separateur visuel léger ou petit titre
         control_layout.addWidget(QLabel("<b>Commandes Articulaires :</b>"))
@@ -304,6 +326,8 @@ class RobotControlGUI(QMainWindow):
         self.btn_red.clicked.connect(self.redemarre)
         self.slider_pince.sliderReleased.connect(self.send_tool_command)
         self.btn_ventouse.clicked.connect(self.send_tool_command)
+        self.combo_view_mode.currentIndexChanged.connect(self.view_stack.setCurrentIndex)
+
 
         self.cam_thread = CameraThread(camera_index=0)
         self.cam_thread.frame_received.connect(self.update_webcam_frame)
@@ -587,23 +611,29 @@ class RobotControlGUI(QMainWindow):
             self.statusBar.showMessage(f"⚠️ Erreur MGD : {str(e)}")
             
             
-    def draw_robot_animation(self, angles):
-        """Récupère les matrices de chaque articulation et envoie la liste des points 3D au Canvas"""
+    def draw_robot_animation(self, angles_rad):
+        """Met à jour l'affichage selon le mode visuel sélectionné (Matplotlib ou PyBullet)"""
         try:
-            points_3d = [[0.0, 0.0, 0.0]] # La base fixe du robot à l'origine (0,0,0)
+            current_mode = self.combo_view_mode.currentIndex()
             
-            # On boucle pour récupérer la position de CHAQUE articulation (de 0 à 4)
-            for j in range(self.robot.joint_nombre):
-                T_joint = LM.ForwardKinematic(self.robot, angles, joint=j)
-                pos_x = T_joint[0, 3]
-                pos_y = T_joint[1, 3]
-                pos_z = T_joint[2, 3]
-                points_3d.append([pos_x, pos_y, pos_z])
+            if current_mode == 0:
+                # MODE MATPLOTLIB : Tracé filaire classique
+                points_3d = [[0.0, 0.0, 0.0]]
+                for j in range(self.robot.joint_nombre):
+                    T_joint = LM.ForwardKinematic(self.robot, angles_rad, joint=j)
+                    pos_x = T_joint[0, 3]
+                    pos_y = T_joint[1, 3]
+                    pos_z = T_joint[2, 3]
+                    points_3d.append([pos_x, pos_y, pos_z])
+                self.canvas_3d.draw_robot(points_3d)
                 
-            # Envoi des points collectés au canevas graphique pour tracé instantané
-            self.canvas_3d.draw_robot(points_3d)
+            elif current_mode == 1:
+                # MODE PYBULLET : Envoi direct des angles en radians au moteur physique
+                self.canvas_pybullet.draw_robot(angles_rad)
+                
         except Exception as e:
-            print(f"Erreur d'affichage du squelette 3D: {e}")
+            print(f"Erreur d'affichage de l'animation 3D : {e}")
+
 
     def closeEvent(self, event):
         """S'assure que la caméra se coupe si l'utilisateur ferme la fenêtre"""
