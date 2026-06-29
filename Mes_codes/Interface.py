@@ -11,12 +11,13 @@ from matplotlib.figure import Figure
 from mpl_toolkits.mplot3d import Axes3D
 
 import Leven_Marq as LM 
+import Interface_pybullet as In   
+import Transmission as tr
+
 
 import cv2
 from PyQt5.QtCore import QThread, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QImage, QPixmap
-
-import Transmission as tr
 
 
 
@@ -136,16 +137,20 @@ class RobotControllerSignals(QWidget):
     tool_command = pyqtSignal(str, dict)    
     emergency_stop = pyqtSignal()           
     Redemarre = pyqtSignal()
+    begin_simulation = pyqtSignal(list)
+
 
 class RobotControlGUI(QMainWindow):
-    def __init__(self, robot):
+    def __init__(self, robot , physicClient = None):
         super().__init__()
         self.robot = robot
+        self.physicClient = physicClient
         self.signals = RobotControllerSignals()
         self.init_ui()
         self.connect_events()
         # Premier affichage de la structure 3D au démarrage
         self.updatePosition()
+        self.was_simulate = False
         
     def init_ui(self):
         self.setWindowTitle("Supervision & Contrôle - Bras Robot 5 Axes")
@@ -158,41 +163,18 @@ class RobotControlGUI(QMainWindow):
         main_layout.setSpacing(15)
 
         # ==========================================
-        # PANNEAU GAUCHE : ANIMATION 3D + SLIDERS COMPACTS
+        # PANNEAU GAUCHE : ANIMATION 3D MATPLOTLIB + SLIDERS COMPACTS
         # ==========================================
         left_panel = QVBoxLayout()
-        
-        # En-tête / Groupe Principal de gauche
         self.control_group = QGroupBox("Visualisation & Articulations")
         control_layout = QVBoxLayout(self.control_group)
         
-        # 1. ZONE D'ANIMATION (Haut Gauche)
-        # --- NOUVEAU : SÉLECTEUR DE MODE D'AFFICHAGE ---
-        
-        view_select_layout = QHBoxLayout()
-        view_select_layout.addWidget(QLabel("<b>Mode d'affichage 3D :</b>"))
-        self.combo_view_mode = QComboBox()
-        self.combo_view_mode.addItems(["Squelette Matplotlib (Rapide)", "Modèle URDF PyBullet (Réaliste)"])
-        view_select_layout.addWidget(self.combo_view_mode)
-        control_layout.addLayout(view_select_layout)
-
-        # --- NOUVEAU : STACKED WIDGET POUR LES DEUX OPTIONS ---
-        self.view_stack = QStackedWidget()
-        
-        # Option A : Votre canevas Matplotlib existant
+        # Réintégration directe du canevas Matplotlib d'origine (Sans sélecteur ni stack)
         self.canvas_3d = MTD3DCanvas(self, width=5, height=4, dpi=100)
+        control_layout.addWidget(self.canvas_3d, stretch=3)
         
-        # Option B : Le nouveau simulateur PyBullet (Donnez le chemin de votre fichier .urdf)
-        self.canvas_pybullet = PyBulletCanvas(self, urdf_path="robot5DoF.urdf")
-        
-        self.view_stack.addWidget(self.canvas_3d)       # Index 0
-        self.view_stack.addWidget(self.canvas_pybullet)  # Index 1
-        
-        control_layout.addWidget(self.view_stack, stretch=3)
-                
-        
-        # Separateur visuel léger ou petit titre
         control_layout.addWidget(QLabel("<b>Commandes Articulaires :</b>"))
+
         
         # 2. DESIGN DES SLIDERS COMPACTS (Grille sur deux colonnes)
         sliders_grid = QGridLayout()
@@ -326,7 +308,6 @@ class RobotControlGUI(QMainWindow):
         self.btn_red.clicked.connect(self.redemarre)
         self.slider_pince.sliderReleased.connect(self.send_tool_command)
         self.btn_ventouse.clicked.connect(self.send_tool_command)
-        self.combo_view_mode.currentIndexChanged.connect(self.view_stack.setCurrentIndex)
 
 
         self.cam_thread = CameraThread(camera_index=0)
@@ -443,6 +424,38 @@ class RobotControlGUI(QMainWindow):
             print(f"Erreur Redémarrage Critique: {e}")
 
 
+
+    @pyqtSlot(dict)
+    def on_simulation_finished(self , result):
+        
+        if result["valid"] :
+            self.statusBar.showMessage(f"La trajectoire a ete valide par la simulation ")
+            trajectoire = result["trajectory"]                
+            pass
+        else :
+            self.statusBar.showMessage(f"La cible est valide inatteignable")
+            pass 
+    
+    @pyqtSlot(list)
+    def on_pybullet_mouse_moved(self, angles_deg):
+        """Reçoit les angles mesurés depuis la simulation PyBullet (mouvement souris)"""
+        if hasattr(self, 'is_animating') and self.is_animating:
+            return
+            
+        # 1. Mise à jour graphique instantanée de tous les curseurs et étiquettes
+        for idx, slider in enumerate(self.sliders):
+            if idx < len(angles_deg):
+                slider.blockSignals(True)  # Évite une boucle infinie de signaux IHM -> PyBullet
+                slider.setFloatValue(angles_deg[idx])
+                self.angle_labels[idx].setText(f"{angles_deg[idx]:.2f}°")
+                slider.blockSignals(False)
+                
+        # 2. APPEL UNIQUE ET OPTIMISÉ : Recalcule le MGD, met à jour les spins XYZ/Orientation
+        # et rafraîchit également le squelette 3D Matplotlib si vous l'utilisez !
+        self.updatePosition()
+
+        
+        
     # ==========================================
     # CALCULS CINÉMATIQUES & RAFRAÎCHISSEMENT 3D
     # ==========================================
@@ -484,6 +497,8 @@ class RobotControlGUI(QMainWindow):
             # 2. Calcul des angles cibles par le MGI (Haute précision)
             angles_cible = LM.inverseKinematic6D(self.robot, T_target)
             
+            self.signals.begin_simulation.emit(angles_cible) #Lancement de la simulation 
+            
             # 3. FIX SYNCHRO CRITIQUE : Si self.current_robot_angles n'existe pas ou si l'utilisateur
             # a bougé un slider manuellement avant, on se recalibre sur les sliders.
             # Sinon, on utilise la mémoire float haute précision pour éviter les sauts de configuration !
@@ -521,6 +536,7 @@ class RobotControlGUI(QMainWindow):
             from PyQt5.QtCore import QTimer
             self.anim_timer = QTimer(self)
             self.anim_timer.timeout.connect(self.executer_pas_trajectoire)
+            
             self.anim_timer.start(int(1000 / frequence_hz))
                     
         except Exception as e:
@@ -612,27 +628,21 @@ class RobotControlGUI(QMainWindow):
             
             
     def draw_robot_animation(self, angles_rad):
-        """Met à jour l'affichage selon le mode visuel sélectionné (Matplotlib ou PyBullet)"""
+        """Met à jour directement le squelette Matplotlib de l'IHM"""
         try:
-            current_mode = self.combo_view_mode.currentIndex()
+            points_3d = [[0.0, 0.0, 0.0]]
+            for j in range(self.robot.joint_nombre):
+                T_joint = LM.ForwardKinematic(self.robot, angles_rad, joint=j)
+                pos_x = T_joint[0, 3]
+                pos_y = T_joint[1, 3]
+                pos_z = T_joint[2, 3]
+                points_3d.append([pos_x, pos_y, pos_z])
             
-            if current_mode == 0:
-                # MODE MATPLOTLIB : Tracé filaire classique
-                points_3d = [[0.0, 0.0, 0.0]]
-                for j in range(self.robot.joint_nombre):
-                    T_joint = LM.ForwardKinematic(self.robot, angles_rad, joint=j)
-                    pos_x = T_joint[0, 3]
-                    pos_y = T_joint[1, 3]
-                    pos_z = T_joint[2, 3]
-                    points_3d.append([pos_x, pos_y, pos_z])
-                self.canvas_3d.draw_robot(points_3d)
-                
-            elif current_mode == 1:
-                # MODE PYBULLET : Envoi direct des angles en radians au moteur physique
-                self.canvas_pybullet.draw_robot(angles_rad)
+            self.canvas_3d.draw_robot(points_3d)
                 
         except Exception as e:
-            print(f"Erreur d'affichage de l'animation 3D : {e}")
+            print(f"Erreur d'affichage Matplotlib : {e}")
+
 
 
     def closeEvent(self, event):
@@ -641,7 +651,7 @@ class RobotControlGUI(QMainWindow):
             self.cam_thread.stop()
         event.accept()
         
-        
+
     def apply_dark_theme(self):
         self.setStyleSheet("""
             QMainWindow { background-color: #1e1e24; color: #ffffff; }
@@ -679,6 +689,7 @@ if __name__ == "__main__":
     # 2. Fenêtre Graphique
     gui = RobotControlGUI(robot=robot5DoF)
     
+    physicClient = In.RobotViewer(gui)
     # 3. Pont Matériel (Modifiez "COM3" ou "/dev/ttyUSB0" selon votre système)
     hardware = tr.RobotHardwareBridge(port="COM3", gui=gui , baudrate=115200)
     
@@ -686,5 +697,7 @@ if __name__ == "__main__":
     
     # Sécurité à la fermeture
     sys.exit_on_close = app.exec_()
+    
     hardware.close()
+    physicClient.close_bullet()
     sys.exit(sys.exit_on_close)
