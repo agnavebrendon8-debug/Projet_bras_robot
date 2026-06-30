@@ -148,9 +148,16 @@ class RobotControlGUI(QMainWindow):
         self.signals = RobotControllerSignals()
         self.init_ui()
         self.connect_events()
+        
+        self.viewer = None 
+        self.calculate_only = False
+        
         # Premier affichage de la structure 3D au démarrage
-        self.updatePosition()
-        self.was_simulate = False
+        self.is_animating = False
+        self.is_manipulating = False
+        self.control_mode = 0 # O pour IHM et 1 pour pybullet
+        self.reset_to_home()
+        
         
     def init_ui(self):
         self.setWindowTitle("Supervision & Contrôle - Bras Robot 5 Axes")
@@ -229,6 +236,7 @@ class RobotControlGUI(QMainWindow):
         self.cartesian_group = QGroupBox("Cinématique Inverse (XYZ / Orientation)")
         cartesian_layout = QGridLayout(self.cartesian_group)
         
+        
         self.spins = {}
         coords = [("X (mm)", -200, 200), ("Y (mm)", -200, 200), ("Z (mm)", 0, 300),
                   ("Pitch (°)", -90, 90), ("Roll (°)", -180, 180)]
@@ -246,6 +254,16 @@ class RobotControlGUI(QMainWindow):
         self.btn_move_xyz.setObjectName("ActionBtn")
         cartesian_layout.addWidget(self.btn_move_xyz, len(coords), 0, 1, 2)
         right_panel.addWidget(self.cartesian_group)
+
+        # --- SÉLECTEUR DE MODE DE PILOTAGE ---
+        mode_group = QGroupBox("Mode de Pilotage")
+        mode_layout = QHBoxLayout(mode_group)
+        
+        self.combo_control_mode = QComboBox()
+        self.combo_control_mode.addItems(["Contrôle via IHM (Sliders/XYZ)", "Contrôle via PyBullet (Souris 3D)"])
+        mode_layout.addWidget(self.combo_control_mode)
+        right_panel.addWidget(mode_group)
+
 
         # Configuration de l'Effecteur
         self.effector_group = QGroupBox("Configuration de l'Effecteur")
@@ -308,29 +326,48 @@ class RobotControlGUI(QMainWindow):
         self.btn_red.clicked.connect(self.redemarre)
         self.slider_pince.sliderReleased.connect(self.send_tool_command)
         self.btn_ventouse.clicked.connect(self.send_tool_command)
+        self.combo_control_mode.currentIndexChanged.connect(self.set_control_mode)
 
 
         self.cam_thread = CameraThread(camera_index=0)
         self.cam_thread.frame_received.connect(self.update_webcam_frame)
         self.cam_thread.start()
-        
+
+
+
+
+    def set_control_mode(self, index):
+        """Bascule le mode de contrôle et gère l'activation des widgets"""
+        self.control_mode = index
+        if index == 0:
+            self.statusBar.showMessage("🎮 Mode IHM activé : Contrôle par sliders et XYZ.")
+            self.control_group.setEnabled(True)   # Active les sliders
+            self.cartesian_group.setEnabled(True) # Active les cases XYZ
+        else:
+            self.statusBar.showMessage("🖱️ Mode Simulation activé : Manipulez le robot à la souris dans PyBullet.")
+            self.control_group.setEnabled(False)  # Désactive les sliders pour éviter les conflits
+            self.cartesian_group.setEnabled(False)# Désactive le XYZ        
     
     # ==========================================
     # LOGIQUE DES pyqtSLOTS ET ENVOI DE DONNÉES
     # ==========================================
+    
     def on_joint_slider_moved(self, index, value):
-        """Déclenché quand l'utilisateur bouge le slider ET par l'animation"""
+        if hasattr(self, 'control_mode') and self.control_mode == 1:
+            return # Sécurité : Interdit en mode PyBullet
+            
         self.angle_labels[index].setText(f"{value:.2f}°")
-        
         if hasattr(self, 'is_animating') and not self.is_animating:
-            # Plus besoin de tricher, on lit directement les floats réels
             self.current_robot_angles = np.array([np.deg2rad(s.floatValue()) for s in self.sliders])
             
         current_angles_deg = [s.floatValue() for s in self.sliders]
-        self.signals.angles_changed.emit(current_angles_deg)
         self.updatePosition()
 
+        if hasattr(self, 'viewer') and self.viewer is not None:
+            self.viewer.update_Simulation(current_angles_deg)
 
+
+        
     @pyqtSlot(QImage)
     def update_webcam_frame(self, qt_image):
         """Met à jour l'affichage de la caméra en adaptant la taille au conteneur"""
@@ -351,12 +388,32 @@ class RobotControlGUI(QMainWindow):
             lbl.setText("0°")
             
         self.updatePosition()
+        if hasattr(self, 'viewer') and self.viewer is not None:
+            current_angles_deg = [float(s.floatValue()) for s in self.sliders]
+            self.viewer.update_Simulation(current_angles_deg)
         self.statusBar.showMessage("Commande renvoyée : Retour à la position Home.")
 
     def send_cartesian_target(self):
-        target = {k: spin.value() for k, spin in self.spins.items()}
-        self.signals.cartesian_changed.emit(target)
+        # 1. On mémorise la cible cartésienne demandée
+        self.last_cartesian_target = {k: spin.value() for k, spin in self.spins.items()}
+        
+        # 2. On appelle updateSlider() UNIQUEMENT pour calculer self.angles_cible_absolus
+        # (Pour éviter que le robot ne bouge tout de suite, nous allons modifier updateSlider juste après)
+
+        self.calculate_only = False  #plus de verifivetion
+                
         self.updateSlider()
+        # self.calculate_only = False
+        
+        # 3. On demande la validation physique au jumeau numérique PyBullet
+        if hasattr(self, 'viewer') and self.viewer is not None:
+            angles_cible_deg = [np.rad2deg(a) for a in self.angles_cible_absolus]
+            self.statusBar.showMessage("⏳ Validation de la trajectoire par le jumeau numérique...")
+            # self.viewer.simulate_motion(angles_cible_deg)
+            
+
+
+
 
     def send_tool_command(self):
         tool_type = self.combo_tool.currentText()
@@ -366,6 +423,7 @@ class RobotControlGUI(QMainWindow):
             params = {"aspiration": self.btn_ventouse.isChecked()}
             self.btn_ventouse.setText("Aspiration ACTIVE" if params["aspiration"] else "Activer l'Aspiration")
         self.signals.tool_command.emit(tool_type, params)
+
 
     def trigger_emergency(self):
         """Déclenche l'arrêt d'urgence de manière ultra-sécurisée sans crash"""
@@ -395,7 +453,8 @@ class RobotControlGUI(QMainWindow):
         except Exception as e:
             # Si une erreur survient, elle s'affiche dans la barre d'état au lieu de fermer l'application
             self.statusBar.showMessage(f"⚠️ Erreur durant l'arrêt d'urgence : {str(e)}")
-            print(f"Erreur Urgence Critique: {e}")
+            (f"Erreur Urgence Critique: {e}")
+
 
     def redemarre(self):
         """Réarme le système sans risque de plantage"""
@@ -421,50 +480,68 @@ class RobotControlGUI(QMainWindow):
                     
         except Exception as e:
             self.statusBar.showMessage(f"⚠️ Erreur durant le redémarrage : {str(e)}")
-            print(f"Erreur Redémarrage Critique: {e}")
+            (f"Erreur Redémarrage Critique: {e}")
 
 
 
-    @pyqtSlot(dict)
-    def on_simulation_finished(self , result):
-        
-        if result["valid"] :
-            self.statusBar.showMessage(f"La trajectoire a ete valide par la simulation ")
-            trajectoire = result["trajectory"]                
-            pass
-        else :
-            self.statusBar.showMessage(f"La cible est valide inatteignable")
-            pass 
     
+    @pyqtSlot(dict)
+    def on_simulation_finished(self, result):
+        """Reçoit le verdict de PyBullet. Si c'est valide, on exécute enfin le mouvement !"""
+        if result["valid"]:
+            self.statusBar.setStyleSheet("background-color: #222831; color: #2ecc71;")
+            self.statusBar.showMessage("✅ Trajectoire validée ! Exécution du mouvement...")
+            
+            # 1. Le jumeau numérique donne son feu vert : 
+            # On coupe le mode "calcul seul" et on relance updateSlider pour démarrer le QTimer
+            self.calculate_only = False
+            self.updateSlider() 
+            
+        else:
+            # En cas de collision ou couple trop grand détecté par PyBullet
+            self.statusBar.setStyleSheet("background-color: #222831; color: #e74c3c;")
+            self.statusBar.showMessage("❌ Mouvement refusé : Risque de collision ou de surcharge !")
+            
+            # On force le robot virtuel à se réaligner sur la position actuelle (sécurité)
+            self.updatePosition()
+            
+            # On débloque immédiatement le bouton cartésien pour l'opérateur
+            self.btn_move_xyz.setEnabled(True)
+            self.is_animating = False
+
+
+
     @pyqtSlot(list)
     def on_pybullet_mouse_moved(self, angles_deg):
         """Reçoit les angles mesurés depuis la simulation PyBullet (mouvement souris)"""
-        if hasattr(self, 'is_animating') and self.is_animating:
+        # --- FILTRAGE DE SÉCURITÉ DE LA BOUCLE ---
+        if (hasattr(self, 'is_animating') and self.is_animating):
             return
             
         # 1. Mise à jour graphique instantanée de tous les curseurs et étiquettes
+        
         for idx, slider in enumerate(self.sliders):
-            if idx < len(angles_deg):
-                slider.blockSignals(True)  # Évite une boucle infinie de signaux IHM -> PyBullet
+            if idx < len(angles_deg) and angles_deg[idx] is not None:
+                slider.blockSignals(True)  # Évite l'effet d'écho IHM -> PyBullet
                 slider.setFloatValue(angles_deg[idx])
                 self.angle_labels[idx].setText(f"{angles_deg[idx]:.2f}°")
                 slider.blockSignals(False)
                 
-        # 2. APPEL UNIQUE ET OPTIMISÉ : Recalcule le MGD, met à jour les spins XYZ/Orientation
-        # et rafraîchit également le squelette 3D Matplotlib si vous l'utilisez !
+        # 2. Recalcule la position cartésienne réelle via le MGD
         self.updatePosition()
 
-        
-        
+
     # ==========================================
     # CALCULS CINÉMATIQUES & RAFRAÎCHISSEMENT 3D
     # ==========================================
-        # Dans le __init__ de votre RobotControlGUI, pensez à initialiser :
+    # Dans le __init__ de votre RobotControlGUI, pensez à initialiser :
     # self.current_robot_angles = np.zeros(5) 
     # self.is_animating = False
 
     def updateSlider(self):
+                
         try:
+                        
             # 1. FIX SÉCURITÉ & VERROU
             self.btn_move_xyz.setEnabled(False)
             self.is_animating = True
@@ -496,9 +573,11 @@ class RobotControlGUI(QMainWindow):
            
             # 2. Calcul des angles cibles par le MGI (Haute précision)
             angles_cible = LM.inverseKinematic6D(self.robot, T_target)
+            self.angles_cible_absolus = angles_cible # On mémorise la cible
             
-            self.signals.begin_simulation.emit(angles_cible) #Lancement de la simulation 
-            
+            if hasattr(self, 'calculate_only') and self.calculate_only:
+                return
+                        
             # 3. FIX SYNCHRO CRITIQUE : Si self.current_robot_angles n'existe pas ou si l'utilisateur
             # a bougé un slider manuellement avant, on se recalibre sur les sliders.
             # Sinon, on utilise la mémoire float haute précision pour éviter les sauts de configuration !
@@ -538,11 +617,12 @@ class RobotControlGUI(QMainWindow):
             self.anim_timer.timeout.connect(self.executer_pas_trajectoire)
             
             self.anim_timer.start(int(1000 / frequence_hz))
-                    
+
         except Exception as e:
             self.statusBar.showMessage(f"⚠️ Erreur MGI ou Trajectoire : {str(e)}")
             self.btn_move_xyz.setEnabled(True)
             self.is_animating = False
+
 
     def executer_pas_trajectoire(self):
         """Fait progresser les articulations à chaque tick du Timer"""
@@ -553,6 +633,7 @@ class RobotControlGUI(QMainWindow):
                 self.signals.angles_changed.emit([angle for angle in self.current_robot_angles])
                 self.appliquer_angles_ihm(self.current_robot_angles) # self.robot_real_angle
                 self.anim_current_step += 1
+                
             else:
                 # ARRIVÉE À DESTINATION
                 self.anim_timer.stop()
@@ -565,7 +646,7 @@ class RobotControlGUI(QMainWindow):
                 self.anim_timer.stop()
             self.is_animating = False
             self.btn_move_xyz.setEnabled(True)
-            print(f"Erreur pas trajectoire: {e}")
+            (f"Erreur pas trajectoire: {e}")
 
     def appliquer_angles_ihm(self, angles_rad):
         """Met à jour graphiquement l'IHM avec une fluidité absolue sans aucune perte d'arrondi"""
@@ -586,7 +667,17 @@ class RobotControlGUI(QMainWindow):
                 self.angle_labels[idx].setText(f"{slider.floatValue():.2f}°")
                 slider.blockSignals(False)
         
+        
         self.draw_robot_animation(angles_rad)
+        
+        # À insérer à la toute fin de appliquer_angles_ihm, juste après self.draw_robot_animation(angles_rad)
+        
+        if hasattr(self, 'viewer') and self.viewer is not None:
+            angles_deg = [np.rad2deg(a) for a in angles_rad]
+            self.viewer.update_Simulation(angles_deg)
+
+        current_angles_deg = [s.floatValue() for s in self.sliders]
+        self.signals.angles_changed.emit(current_angles_deg)  
 
 
     def updatePosition(self):
@@ -641,7 +732,7 @@ class RobotControlGUI(QMainWindow):
             self.canvas_3d.draw_robot(points_3d)
                 
         except Exception as e:
-            print(f"Erreur d'affichage Matplotlib : {e}")
+            (f"Erreur d'affichage Matplotlib : {e}")
 
 
 
@@ -688,8 +779,9 @@ if __name__ == "__main__":
     
     # 2. Fenêtre Graphique
     gui = RobotControlGUI(robot=robot5DoF)
-    
     physicClient = In.RobotViewer(gui)
+    gui.viewer = physicClient
+    
     # 3. Pont Matériel (Modifiez "COM3" ou "/dev/ttyUSB0" selon votre système)
     hardware = tr.RobotHardwareBridge(port="COM3", gui=gui , baudrate=115200)
     
