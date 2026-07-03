@@ -538,10 +538,10 @@ class RobotControlGUI(QMainWindow):
     # self.current_robot_angles = np.zeros(5) 
     # self.is_animating = False
 
-    def updateSlider(self):
+    def updateSlider(self , T_Pos=None):
                 
         try:
-                        
+            
             # 1. FIX SÉCURITÉ & VERROU
             self.btn_move_xyz.setEnabled(False)
             self.is_animating = True
@@ -553,7 +553,7 @@ class RobotControlGUI(QMainWindow):
             z = float(self.spins['Z'].value())
             pitch = np.deg2rad(float(self.spins['Pitch'].value()))
             roll = np.deg2rad(float(self.spins['Roll'].value()))
-            
+
             cp, sp = np.cos(pitch), np.sin(pitch)
             cr, sr = np.cos(roll), np.sin(roll)
             
@@ -564,29 +564,28 @@ class RobotControlGUI(QMainWindow):
                 [0,   0,        0,       1]
             ], dtype=np.float64)
             
-            # T_target = np.array([
-            #     [c_p * c_r, -s_r,  s_p * c_r, x],
-            #     [c_p * s_r,  c_r,  s_p * s_r, y],
-            #     [-s_p,       0,     c_p,       z],
-               
-            # ])
-           
+            # if T_Pos is None:
+            #     T_Pos = T_target[:3 , 3]
+            
             # 2. Calcul des angles cibles par le MGI (Haute précision)
             angles_cible = LM.inverseKinematic6D(self.robot, T_target)
-            self.angles_cible_absolus = angles_cible # On mémorise la cible
+            self.angles_cible_absolus = angles_cible 
+            
             
             if hasattr(self, 'calculate_only') and self.calculate_only:
                 return
                         
-            # 3. FIX SYNCHRO CRITIQUE : Si self.current_robot_angles n'existe pas ou si l'utilisateur
-            # a bougé un slider manuellement avant, on se recalibre sur les sliders.
-            # Sinon, on utilise la mémoire float haute précision pour éviter les sauts de configuration !
             
             if not hasattr(self, 'current_robot_angles') or self.current_robot_angles is None:
                 self.current_robot_angles = np.array([np.deg2rad(float(s.floatValue())) for s in self.sliders]) #np.rad2deg(self.robot_real_angle)
+                # self.current_pos = LM.ForwardKinematic(self.robot , self.current_robot_angles)[:3 , 3]
+                
             
             # 4. Calcul de la distance articulaire maximale (en degrés)
             distance_max_deg = np.rad2deg(np.max(np.abs(angles_cible - self.current_robot_angles)))
+            
+            
+            
             
             # Si le robot est déjà au point souhaité (mouvement infime), on stoppe de suite sans saut
             if distance_max_deg < 0.1:
@@ -596,6 +595,7 @@ class RobotControlGUI(QMainWindow):
                 self.statusBar.showMessage("✅ Le robot est déjà à la position cible.")
                 return
 
+            
             # 5. Planification de la trajectoire pas à pas
             vitesse_deg_s = 45.0  
             duree_totale_s = distance_max_deg / vitesse_deg_s
