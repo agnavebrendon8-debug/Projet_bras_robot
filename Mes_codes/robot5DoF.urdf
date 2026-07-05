@@ -21,7 +21,7 @@
     </inertial>
   </link>
 
-  <!-- Joint 1 : Axe Z standard -->
+  <!-- Joint 1 : Axe Z standard (Conforme D-H Axe 1) -->
   <joint name="joint_1" type="revolute">
     <parent link="base_link"/>
     <child link="link_1"/>
@@ -48,19 +48,18 @@
     </inertial>
   </link>
 
-  <!-- Joint 2 : Alignement D-H strict sans inclinaison rpy prématurée de l'axe -->
+  <!-- Joint 2 : Basculement D-H orthogonal (Axe 2 pivotant sur X local) -->
   <joint name="joint_2" type="revolute">
     <parent link="link_1"/>
     <child link="link_2"/>
     <origin xyz="0 0 0.05" rpy="0 0 0"/>
-    <axis xyz="0 1 0"/> <!-- Pivotement transversal selon le repère de votre matrice -->
+    <axis xyz="0 1 0"/> <!-- Conforme D-H après torsion phi = pi/2 -->
     <limit lower="-3.1416" upper="3.1416" effort="0.45" velocity="6"/>
     <dynamics damping="0.05" friction="0.02"/>
   </joint>
 
   <link name="link_2">
     <visual>
-      <!-- Le cylindre visuel est incliné pour représenter le bras sans tourner l'axe du joint -->
       <origin xyz="0 0 0.10" rpy="0 0 0"/>
       <geometry><cylinder length="0.20" radius="0.03"/></geometry>
       <material name="grey"/>
@@ -76,12 +75,12 @@
     </inertial>
   </link>
 
-  <!-- Joint 3 : Translation le long de l'axe Z du segment précédent -->
+  <!-- Joint 3 : Pivotement parallèle à l'axe 2 (Conforme D-H Axe 3) -->
   <joint name="joint_3" type="revolute">
     <parent link="link_2"/>
     <child link="link_3"/>
     <origin xyz="0 0 0.20" rpy="0 0 0"/>
-    <axis xyz="0 1 0"/>
+    <axis xyz="1 0 0"/> <!-- Aligné sur l'axe X orthogonal de torsion -->
     <limit lower="-3.1416" upper="3.1416" effort="0.45" velocity="6"/>
     <dynamics damping="0.05" friction="0.02"/>
   </joint>
@@ -103,12 +102,12 @@
     </inertial>
   </link>
 
-  <!-- Joint 4 -->
+  <!-- Joint 4 : Pivotement parallèle (Conforme D-H Axe 4) -->
   <joint name="joint_4" type="revolute">
     <parent link="link_3"/>
     <child link="link_4"/>
     <origin xyz="0 0 0.10" rpy="0 0 0"/>
-    <axis xyz="0 1 0"/>
+    <axis xyz="1 0 0"/>
     <limit lower="-3.1416" upper="3.1416" effort="0.45" velocity="6"/>
     <dynamics damping="0.05" friction="0.02"/>
   </joint>
@@ -130,12 +129,12 @@
     </inertial>
   </link>
 
-  <!-- Joint 5 : Rotation de l'effecteur (Torsion finale) -->
+  <!-- Joint 5 : Torsion finale axiale de l'outil (Conforme D-H Axe 5) -->
   <joint name="joint_5" type="revolute">
     <parent link="link_4"/>
     <child link="link_5"/>
     <origin xyz="0 0 0.05" rpy="0 0 0"/>
-    <axis xyz="0 0 1"/> <!-- Axe de rotation aligné sur le vecteur D-H de l'outil -->
+    <axis xyz="0 0 1"/> <!-- Retour sur l'axe Z local de l'effecteur -->
     <limit lower="-3.1416" upper="3.1416" effort="0.45" velocity="6"/>
     <dynamics damping="0.05" friction="0.02"/>
   </joint>
@@ -158,156 +157,3 @@
   </link>
 
 </robot>
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-<!-- <?xml version="1.0" ?>
-<robot name="dh_5dof_robot">
-
-   Matériaux pour la distinction visuelle dans PyBullet ->
-  <material name="blue">
-    <color rgba="0.0 0.0 0.8 1.0"/>
-  </material>
-  <material name="grey">
-    <color rgba="0.5 0.5 0.5 1.0"/>
-  </material>
-  <material name="red">
-    <color rgba="0.8 0.0 0.0 1.0"/>
-  </material>
-
-  <!- BASE LINK ->
-  <link name="base_link">
-    <visual>
-      <geometry>
-        <cylinder length="0.05" radius="0.1"/>
-      </geometry>
-      <material name="grey"/>
-    </visual>
-  </link>
-
-  <!- ================= JOINT 1 ================= ->
-  <!- DH: phi=pi/2, r=0, d=50mm ->
-
-  <joint name="joint_1" type="revolute">
-    <parent link="base_link"/>
-    <child link="link_1"/>
-    <!- Positionné à d1 (0.05m) sur l'axe Z de la base ->
-    <origin rpy="0 0 0" xyz="0 0 0.05"/>
-    <axis xyz="0 0 1"/>
-    <limit effort="100" lower="-3.14" upper="3.14" velocity="1.0"/>
-  </joint>
-
-  <link name="link_1">
-    <visual>
-      <!- Application de phi1 (pi/2 autour de X) pour le repère suivant ->
-      <origin rpy="1.57079632679 0 0" xyz="0 0 0"/>
-      <geometry>
-        <cylinder length="0.1" radius="0.04"/>
-      </geometry>
-      <material name="blue"/>
-    </visual>
-  </link>
-
-  <!- ================= JOINT 2 ================= ->
-  <!- DH: phi=0, r=200mm, d=0 ->
-  <joint name="joint_2" type="revolute">
-    <parent link="link_1"/>
-    <child link="link_2"/>
-    <!- Suite à phi1, l'axe X du repère précédent pointe vers le haut/côté. ->
-    <!- On translate de r2 (0.2m) selon le X du repère 1 et applique la rotation phi1 (1.570796) ->
-    <origin rpy="1.57079632679 0 0" xyz="0 0 0"/>
-    <axis xyz="0 0 1"/>
-    <limit effort="100" lower="-3.14" upper="3.14" velocity="1.0"/>
-  </joint>
-
-  <link name="link_2">
-    <visual>
-      <!- Cylindre aligné le long du bras (longueur r2 = 0.2m) ->
-      <origin rpy="0 1.57079632679 0" xyz="0.1 0 0"/>
-      <geometry>
-        <cylinder length="0.2" radius="0.03"/>
-      </geometry>
-      <material name="grey"/>
-    </visual>
-  </link>
-
-  <!- ================= JOINT 3 ================= ->
-  <!- DH: phi=0, r=100mm, d=0 ->
-  <joint name="joint_3" type="revolute">
-    <parent link="link_2"/>
-    <child link="link_3"/>
-    <!- Translation de r2 (0.2m) depuis l'origine du lien 2 ->
-    <origin rpy="0 0 0" xyz="0.2 0 0"/>
-    <axis xyz="0 0 1"/>
-    <limit effort="100" lower="-3.14" upper="3.14" velocity="1.0"/>
-  </joint>
-
-  <link name="link_3">
-    <visual>
-      <!- Cylindre aligné le long du bras (longueur r3 = 0.1m) ->
-      <origin rpy="0 1.57079632679 0" xyz="0.05 0 0"/>
-      <geometry>
-        <cylinder length="0.1" radius="0.025"/>
-      </geometry>
-      <material name="blue"/>
-    </visual>
-  </link>
-
-  <!- ================= JOINT 4 ================= ->
-  <!- DH: phi=pi/2, r=0, d=10mm ->
-  <joint name="joint_4" type="revolute">
-    <parent link="link_3"/>
-    <child link="link_4"/>
-    <!- Translation de r3 (0.1m) selon X, et d4 (0.01m) selon Z ->
-    <origin rpy="0 0 0" xyz="0.1 0 0.01"/>
-    <axis xyz="0 0 1"/>
-    <limit effort="100" lower="-3.14" upper="3.14" velocity="1.0"/>
-  </joint>
-
-  <link name="link_4">
-    <visual>
-      <!- Application de phi4 (pi/2 autour de X) ->
-      <origin rpy="1.57079632679 0 0" xyz="0 0 0"/>
-      <geometry>
-        <cylinder length="0.05" radius="0.02"/>
-      </geometry>
-      <material name="grey"/>
-    </visual>
-  </link>
-
-  <!- ================= JOINT 5 ================= ->
-  <!- DH: phi=0, r=10mm, d=0 ->
-  <joint name="joint_5" type="revolute">
-    <parent link="link_4"/>
-    <child link="link_5"/>
-    <!- Rotation phi4 héritée (1.570796) ->
-    <origin rpy="1.57079632679 0 0" xyz="0 0 0"/>
-    <axis xyz="0 0 1"/>
-    <limit effort="100" lower="-3.14" upper="3.14" velocity="1.0"/>
-  </joint>
-
-  <link name="link_5">
-    <visual>
-      <!- Organe effecteur / Outil terminal (longueur r5 = 0.01m) ->
-      <origin rpy="0 1.57079632679 0" xyz="0.005 0 0"/>
-      <geometry>
-        <box size="0.01 0.02 0.02"/>
-      </geometry>
-      <material name="red"/>
-    </visual>
-  </link>
-
-</robot> -->

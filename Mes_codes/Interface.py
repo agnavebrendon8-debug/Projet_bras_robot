@@ -190,7 +190,8 @@ class RobotControlGUI(QMainWindow):
         
         self.sliders = []
         self.angle_labels = []
-        limites_axes = [(-180, 180), (-180, 180), (-180, 180), (-180, 180), (-180, 180)]
+        # limites_axes = [(-180, 180), (-180, 180), (-180, 180), (-180, 180), (-180, 180)]
+        limites_axes = list(np.rad2deg(self.robot.limits))
         
         for i in range(5):
             row_idx = i // 2
@@ -291,6 +292,27 @@ class RobotControlGUI(QMainWindow):
         effector_layout.addWidget(self.tool_stack)
         right_panel.addWidget(self.effector_group)
 
+
+        # ==========================================
+        # ZONE DE DÉPÔT / IMPORTATION G-CODE
+        # ==========================================
+        gcode_group = QGroupBox("Programme G-Code")
+        gcode_layout = QVBoxLayout(gcode_group)
+        
+        # Étiquette affichant le fichier actuellement chargé
+        self.lbl_gcode_status = QLabel("Aucun fichier chargé (*.gcode, *.nc)")
+        self.lbl_gcode_status.setWordWrap(True)
+        self.lbl_gcode_status.setStyleSheet("color: #a0a0ab; font-style: italic; font-size: 10px;")
+        
+        # Bouton d'importation de fichier
+        self.btn_import_gcode = QPushButton("📁 Charger un fichier G-Code")
+        self.btn_import_gcode.setFixedHeight(30)
+        
+        gcode_layout.addWidget(self.btn_import_gcode)
+        gcode_layout.addWidget(self.lbl_gcode_status)
+        right_panel.addWidget(gcode_group)
+
+
         # Arrêt d'Urgence
         self.btn_estop = QPushButton("ARRÊT D'URGENCE")
         self.btn_estop.setObjectName("EmergencyBtn")
@@ -312,7 +334,10 @@ class RobotControlGUI(QMainWindow):
         self.lbl_webcam.setStyleSheet("background-color: #222831; border: 1px solid #3a3a44; min-height: 200px;")
         right_panel.addWidget(self.lbl_webcam)
 
+        
         self.is_animating = False 
+
+
         
     def connect_events(self):
         for idx, slider in enumerate(self.sliders):
@@ -327,13 +352,12 @@ class RobotControlGUI(QMainWindow):
         self.slider_pince.sliderReleased.connect(self.send_tool_command)
         self.btn_ventouse.clicked.connect(self.send_tool_command)
         self.combo_control_mode.currentIndexChanged.connect(self.set_control_mode)
+        self.btn_import_gcode.clicked.connect(self.select_gcode_file)
 
 
         self.cam_thread = CameraThread(camera_index=0)
         self.cam_thread.frame_received.connect(self.update_webcam_frame)
         self.cam_thread.start()
-
-
 
 
     def set_control_mode(self, index):
@@ -394,22 +418,16 @@ class RobotControlGUI(QMainWindow):
         self.statusBar.showMessage("Commande renvoyée : Retour à la position Home.")
 
     def send_cartesian_target(self):
-        # 1. On mémorise la cible cartésienne demandée
-        self.last_cartesian_target = {k: spin.value() for k, spin in self.spins.items()}
         
-        # 2. On appelle updateSlider() UNIQUEMENT pour calculer self.angles_cible_absolus
-        # (Pour éviter que le robot ne bouge tout de suite, nous allons modifier updateSlider juste après)
-
-        self.calculate_only = False  #plus de verifivetion
+        self.last_cartesian_target = {k: spin.value() for k, spin in self.spins.items()}
+        self.calculate_only = False 
                 
         self.updateSlider()
-        # self.calculate_only = False
-        
-        # 3. On demande la validation physique au jumeau numérique PyBullet
-        if hasattr(self, 'viewer') and self.viewer is not None:
-            angles_cible_deg = [np.rad2deg(a) for a in self.angles_cible_absolus]
-            self.statusBar.showMessage("⏳ Validation de la trajectoire par le jumeau numérique...")
-            # self.viewer.simulate_motion(angles_cible_deg)
+        # # 3. On demande la validation physique au jumeau numérique PyBullet
+        # if hasattr(self, 'viewer') and self.viewer is not None and hasattr(self , "angles_cible_absolus"):
+        #     angles_cible_deg = [np.rad2deg(a) for a in self.angles_cible_absolus]
+        #     self.statusBar.showMessage("⏳ Validation de la trajectoire par le jumeau numérique...")
+        #     # self.viewer.simulate_motion(angles_cible_deg)
             
 
 
@@ -484,6 +502,8 @@ class RobotControlGUI(QMainWindow):
 
 
 
+    # cette methode vise a verifier le mouvement du robot dans l interface pybullet 
+    # mais n est pas utiliser pour l instant 
     
     @pyqtSlot(dict)
     def on_simulation_finished(self, result):
@@ -538,14 +558,12 @@ class RobotControlGUI(QMainWindow):
     # self.current_robot_angles = np.zeros(5) 
     # self.is_animating = False
 
-    def updateSlider(self , T_Pos=None):
-                
+    def updateSlider(self, T_Pos=None):
         try:
-            
             # 1. FIX SÉCURITÉ & VERROU
             self.btn_move_xyz.setEnabled(False)
             self.is_animating = True
-            self.statusBar.showMessage("⏳ Calcul et exécution de la trajectoire en cours...")
+            self.statusBar.showMessage("⏳ Calcul et planification du profil de vitesse fluide...")
 
             # Récupération de la cible cartésienne depuis l'IHM
             x = float(self.spins['X'].value())
@@ -564,30 +582,16 @@ class RobotControlGUI(QMainWindow):
                 [0,   0,        0,       1]
             ], dtype=np.float64)
             
-            # if T_Pos is None:
-            #     T_Pos = T_target[:3 , 3]
-            
-            # 2. Calcul des angles cibles par le MGI (Haute précision)
-            angles_cible = LM.inverseKinematic6D(self.robot, T_target)
+            # 2. Calcul unique des angles cibles par le MGI (Haute précision)
+            angles_cible = LM.inverseKinematic6D(self.robot, T_target )
             self.angles_cible_absolus = angles_cible 
-            
-            
-            if hasattr(self, 'calculate_only') and self.calculate_only:
-                return
-                        
-            
-            if not hasattr(self, 'current_robot_angles') or self.current_robot_angles is None:
-                self.current_robot_angles = np.array([np.deg2rad(float(s.floatValue())) for s in self.sliders]) #np.rad2deg(self.robot_real_angle)
-                # self.current_pos = LM.ForwardKinematic(self.robot , self.current_robot_angles)[:3 , 3]
-                
+            # 3. Lecture de la position de départ réelle
+            self.angles_depart_absolus = np.array([np.deg2rad(float(s.floatValue())) for s in self.sliders])
             
             # 4. Calcul de la distance articulaire maximale (en degrés)
-            distance_max_deg = np.rad2deg(np.max(np.abs(angles_cible - self.current_robot_angles)))
+            distance_max_deg = np.rad2deg(np.max(np.abs(angles_cible - self.angles_depart_absolus)))
             
-            
-            
-            
-            # Si le robot est déjà au point souhaité (mouvement infime), on stoppe de suite sans saut
+            # Si le robot est déjà au point souhaité, on stoppe de suite
             if distance_max_deg < 0.1:
                 self.appliquer_angles_ihm(angles_cible)
                 self.btn_move_xyz.setEnabled(True)
@@ -595,18 +599,17 @@ class RobotControlGUI(QMainWindow):
                 self.statusBar.showMessage("✅ Le robot est déjà à la position cible.")
                 return
 
-            
-            # 5. Planification de la trajectoire pas à pas
-            vitesse_deg_s = 45.0  
+            # 5. Planification temporelle à fréquence fixe (Régulation matérielle)
+            vitesse_deg_s = 40.0  # Vitesse de croisière maximale tolérée
             duree_totale_s = distance_max_deg / vitesse_deg_s
             
-            frequence_hz = 40 
-            self.anim_total_steps = int(duree_totale_s * frequence_hz)
-            self.anim_total_steps = max(5, self.anim_total_steps) 
+            # 40ms (25 Hz) : Fréquence idéale pour ne pas saturer le buffer de l'Arduino
+            self.periode_ms = 40 
+            self.anim_total_steps = int(duree_totale_s * (1000 / self.periode_ms))
+            self.anim_total_steps = max(10, self.anim_total_steps) # Minimum 10 pas pour lisser
             
-            # Calcul de l'incrément linéaire à partir de la position REELLE actuelle
-            self.anim_step_increment = (angles_cible - self.current_robot_angles) / self.anim_total_steps
-            
+            # Initialisation du cache de transmission série pour filtrer le bruit mécanique
+            self.last_sent_angles_deg = np.zeros(5)
             self.anim_current_step = 0
             
             if hasattr(self, 'anim_timer') and self.anim_timer.isActive():
@@ -615,8 +618,7 @@ class RobotControlGUI(QMainWindow):
             from PyQt5.QtCore import QTimer
             self.anim_timer = QTimer(self)
             self.anim_timer.timeout.connect(self.executer_pas_trajectoire)
-            
-            self.anim_timer.start(int(1000 / frequence_hz))
+            self.anim_timer.start(self.periode_ms)
 
         except Exception as e:
             self.statusBar.showMessage(f"⚠️ Erreur MGI ou Trajectoire : {str(e)}")
@@ -625,33 +627,57 @@ class RobotControlGUI(QMainWindow):
 
 
     def executer_pas_trajectoire(self):
-        """Fait progresser les articulations à chaque tick du Timer"""
+        """Calcule l'état lissé des moteurs par profil de vitesse à chaque tick du Timer"""
         try:
             if self.anim_current_step < self.anim_total_steps:
-                # Progression cumulative en float haute précision
-                self.current_robot_angles += self.anim_step_increment
-                self.signals.angles_changed.emit([angle for angle in self.current_robot_angles])
-                self.appliquer_angles_ihm(self.current_robot_angles) # self.robot_real_angle
+                # Coefficient temporel normalisé progressant strictement de 0.0 à 1.0
+                t = self.anim_current_step / (self.anim_total_steps - 1)
+                
+                # LOI COSINUSOÏDALE (Profil en S) : Accélération douce au départ, décélération au freinage.
+                # Supprime les chocs mécaniques sur le robot réel.
+                s = 0.5 * (1.0 - np.cos(np.pi * t))
+                
+                # Interpolation articulaire lissée (Garantit l'absence totale de dépassement)
+                self.current_robot_angles = (1.0 - s) * self.angles_depart_absolus + s * self.angles_cible_absolus
+                
+                # Mise à jour de l'IHM graphique et du viewer PyBullet
+                self.appliquer_angles_ihm(self.current_robot_angles)
+                
+                # --- FILTRE ET RÉGULATION SÉRIE POUR LE ROBOT RÉEL ---
+                current_angles_deg = np.array([s.floatValue() for s in self.sliders])
+                diff_moteurs = np.abs(current_angles_deg - self.last_sent_angles_deg)
+                
+                # Bande morte de 0.15°. Si le micro-déplacement est invisible, 
+                # on n'envoie pas la trame pour économiser le processeur du robot.
+                if np.any(diff_moteurs > 0.15):
+                    self.signals.angles_changed.emit(current_angles_deg.tolist())
+                    self.last_sent_angles_deg = current_angles_deg.copy()
+                
                 self.anim_current_step += 1
                 
             else:
                 # ARRIVÉE À DESTINATION
                 self.anim_timer.stop()
+                self.appliquer_angles_ihm(self.angles_cible_absolus)
+                
+                # Envoi final forcé de calage précis sur la cible absolue
+                current_angles_deg = [s.floatValue() for s in self.sliders]
+                self.signals.angles_changed.emit(current_angles_deg)
+                
                 self.is_animating = False
                 self.btn_move_xyz.setEnabled(True)
-                self.statusBar.showMessage("✅ Trajectoire cartésienne exécutée avec succès.")
+                self.statusBar.showMessage("✅ Trajectoire articulaire fluide exécutée avec succès.")
 
         except Exception as e:
             if hasattr(self, 'anim_timer'):
                 self.anim_timer.stop()
             self.is_animating = False
             self.btn_move_xyz.setEnabled(True)
-            (f"Erreur pas trajectoire: {e}")
+            print(f"Erreur pas trajectoire: {e}")
+
 
     def appliquer_angles_ihm(self, angles_rad):
-        """Met à jour graphiquement l'IHM avec une fluidité absolue sans aucune perte d'arrondi"""
-        self.current_robot_angles = np.array(angles_rad).copy()
-
+        """Met à jour graphiquement l'IHM et PyBullet sans doubler l'envoi série"""
         if hasattr(self.robot, 'current_angle'):
             self.robot.current_angle = angles_rad
 
@@ -659,25 +685,22 @@ class RobotControlGUI(QMainWindow):
             if idx < len(angles_rad):
                 slider.blockSignals(True)
                 angle_deg = np.rad2deg(angles_rad[idx])
-                
                 angle_clamped = max(slider.floatMinimum(), min(slider.floatMaximum(), angle_deg))
                 
-                # Injection directe de la valeur float brute
                 slider.setFloatValue(angle_clamped)
                 self.angle_labels[idx].setText(f"{slider.floatValue():.2f}°")
                 slider.blockSignals(False)
         
-        
+        # Rafraîchissement synchrone de votre jumeau numérique / squelette 3D
         self.draw_robot_animation(angles_rad)
         
-        # À insérer à la toute fin de appliquer_angles_ihm, juste après self.draw_robot_animation(angles_rad)
-        
+        # Transmission directe vers la simulation autonome PyBullet
         if hasattr(self, 'viewer') and self.viewer is not None:
             angles_deg = [np.rad2deg(a) for a in angles_rad]
             self.viewer.update_Simulation(angles_deg)
-
-        current_angles_deg = [s.floatValue() for s in self.sliders]
-        self.signals.angles_changed.emit(current_angles_deg)  
+            
+        # IMPORTANT : On a retiré self.signals.angles_changed.emit() d'ici pour que seul 
+        # le filtre régulé à 25Hz de executer_pas_trajectoire gère l'envoi vers le vrai robot.
 
 
     def updatePosition(self):
@@ -691,12 +714,9 @@ class RobotControlGUI(QMainWindow):
             T_ee = LM.ForwardKinematic(self.robot, current_angles_rad, joint=-1)
             
             X, Y, Z = T_ee[0, 3], T_ee[1, 3], T_ee[2, 3]
-            # pitch_rad = -np.arcsin(T_ee[2, 0])
-            # roll_rad = np.arctan2(T_ee[2, 1], T_ee[2, 2])
             
             pitch_rad = np.arctan2(T_ee[2, 1], T_ee[2, 2])
             
-            # L'angle roll s'extrait de la première colonne qui dépend du cos/sin de teta
             roll_rad = np.arctan2(T_ee[1, 0], T_ee[0, 0])
             
             for spin in self.spins.values():
@@ -736,6 +756,174 @@ class RobotControlGUI(QMainWindow):
 
 
 
+# =======================================================================
+# AJOUT DES METHODES DE TRAITEMENTS DES FICHIERS GCODE 
+# =======================================================================
+
+    def select_gcode_file(self):
+        """Ouvre un explorateur de fichiers natif pour sélectionner le G-Code"""
+        from PyQt5.QtWidgets import QFileDialog
+        
+        options = QFileDialog.Options()
+        # Ouvre la boîte de dialogue Windows/Linux filtrée sur les extensions G-code standards
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, 
+            "Sélectionner un fichier G-Code", 
+            "", 
+            "Fichiers G-Code (*.gcode *.nc *.txt);;Tous les fichiers (*)", 
+            options=options
+        )
+        
+        if file_path:
+            # Récupère uniquement le nom du fichier (sans tout le chemin absolu) pour l'affichage
+            import os
+            file_name = os.path.basename(file_path)
+            self.lbl_gcode_status.setText(f"Fichier actif : <b>{file_name}</b>")
+            
+            # Lance immédiatement la phase de pré-calcul en tâche de fond (Bufferisation)
+            self.process_and_buffer_gcode(file_path)
+
+    def process_and_buffer_gcode(self, file_path):
+        """Traite le G-Code ligne par ligne et découpe chaque mouvement en profil lissé"""
+        try:
+            self.statusBar.showMessage("⏳ Analyse et lissage du G-Code en cours...")
+            self.trajectory_buffer = [] # Réinitialisation du buffer d'angles
+            
+            # Initialisation du point de départ cartésien (lecture des positions actuelles du robot)
+            angles_actuels = np.array([np.deg2rad(s.floatValue()) for s in self.sliders])
+            T_current = LM.ForwardKinematic(self.robot, angles_actuels, joint=-1)
+            last_x, last_y, last_z = T_current[0, 3], T_current[1, 3], T_current[2, 3]
+            
+            # Utilisation des orientations de saisie actuelles par défaut
+            pitch = np.deg2rad(float(self.spins['Pitch'].value()))
+            roll = np.deg2rad(float(self.spins['Roll'].value()))
+
+            with open(file_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith(';') or line.startswith('('):
+                        continue # Ignore les commentaires G-code
+                        
+                    if line.startswith('G1') or line.startswith('G0'):
+                        parts = line.split()
+                        target_x, target_y, target_z = last_x, last_y, last_z
+                        
+                        # Extraction des axes XYZ du bloc de texte
+                        for part in parts:
+                            if part.startswith('X'): target_x = float(part[1:])
+                            if part.startswith('Y'): target_y = float(part[1:])
+                            if part.startswith('Z'): target_z = float(part[1:])
+                        
+                        # --- INTERPOLATION SÉCURISÉE ENTRE CHAQUE COORDONNÉE ---
+                        distance_segment = np.linalg.norm(np.array([target_x, target_y, target_z]) - np.array([last_x, last_y, last_z]))
+                        if distance_segment < 0.1:
+                            continue
+                            
+                        # Vitesse max imposée pour découper le temps de chaque ligne G-code (ex: 30 mm/s)
+                        vitesse_mm_s = 30.0
+                        duree_segment_s = distance_segment / vitesse_mm_s
+                        
+                        # Échantillonnage à 25 Hz (Toutes les 40ms) pour coller aux performances de l'Arduino
+                        periode_ms = 40
+                        pas_segment = max(4, int((duree_segment_s * 1000) / periode_ms))
+                        
+                        # Évolution temporelle lissée en Cosinus (Profil de vitesse sans chocs)
+                        for k in range(pas_segment):
+                            t = k / (pas_segment - 1)
+                            s = 0.5 * (1.0 - np.cos(np.pi * t)) # Loi d'accélération douce
+                            
+                            # Calcul de la coordonnée spatiale rectiligne intermédiaire
+                            inter_x = (1.0 - s) * last_x + s * target_x
+                            inter_y = (1.0 - s) * last_y + s * target_y
+                            inter_z = (1.0 - s) * last_z + s * target_z
+                            
+                            # Construction de la matrice homogène
+                            cp, sp = np.cos(pitch), np.sin(pitch)
+                            cr, sr = np.cos(roll), np.sin(roll)
+                            T_step = np.array([
+                                [cr, -sr * cp,  sr * sp, inter_x],
+                                [sr,  cr * cp, -cr * sp, inter_y],
+                                [0,   sp,       cp,      inter_z],
+                                [0,   0,        0,       1]
+                            ], dtype=np.float64)
+                            
+                            # MGI avec initialisation chaude (Warm-Start) sur le point précédent
+                            angles_actuels = LM.inverseKinematic6D(self.robot, T_step, init_estimation=angles_actuels)
+                            self.trajectory_buffer.append(angles_actuels.copy())
+                            
+                        # Enregistrement du point d'arrivée comme point de départ de la ligne suivante
+                        last_x, last_y, last_z = target_x, target_y, target_z
+
+            self.statusBar.showMessage(f"✅ Trajectoire G-Code compilée : {len(self.trajectory_buffer)} étapes prêtes.", 5000)
+            
+            # Modification dynamique du bouton principal de trajectoire pour devenir l'exécuteur du G-Code
+            self.btn_move_xyz.setText("▶️ Exécuter le G-Code")
+            # On déconnecte l'ancien événement et on connecte la lecture du buffer
+            try: self.btn_move_xyz.clicked.disconnect()
+            except: pass
+            self.btn_move_xyz.clicked.connect(self.execute_buffer_trajectory)
+            
+        except Exception as e:
+            self.statusBar.showMessage(f"❌ Échec de la compilation du fichier : {str(e)}")
+
+    def execute_buffer_trajectory(self):
+        """Lance l'exécution pas à pas cadencée du buffer sans latence processeur"""
+        if not hasattr(self, 'trajectory_buffer') or len(self.trajectory_buffer) == 0:
+            return
+            
+        self.btn_move_xyz.setEnabled(False)
+        self.btn_import_gcode.setEnabled(False)
+        self.is_animating = True
+        
+        self.anim_current_step = 0
+        self.anim_total_steps = len(self.trajectory_buffer)
+        self.last_sent_angles_deg = np.zeros(5)
+
+        if hasattr(self, 'anim_timer') and self.anim_timer.isActive():
+            self.anim_timer.stop()
+            
+        from PyQt5.QtCore import QTimer
+        self.anim_timer = QTimer(self)
+        self.anim_timer.timeout.connect(self.executer_pas_buffer)
+        self.anim_timer.start(40) # Cadencement mécanique régulé à 25 Hz (40 ms)
+
+    def executer_pas_buffer(self):
+        """Déroule le buffer, filtre le bruit mécanique et envoie à l'Arduino à 25Hz"""
+        try:
+            if self.anim_current_step < self.anim_total_steps:
+                angles_rad = self.trajectory_buffer[self.anim_current_step]
+                
+                # Mise à jour synchronisée de l'IHM et de PyBullet (zéro calcul lourd)
+                self.appliquer_angles_ihm(angles_rad)
+                
+                # Filtre de bande morte matériel
+                current_angles_deg = np.array([s.floatValue() for s in self.sliders])
+                diff = np.abs(current_angles_deg - self.last_sent_angles_deg)
+                
+                if np.any(diff > 0.15):
+                    self.signals.angles_changed.emit(current_angles_deg.tolist())
+                    self.last_sent_angles_deg = current_angles_deg.copy()
+                    
+                self.anim_current_step += 1
+            else:
+                self.anim_timer.stop()
+                self.is_animating = False
+                self.btn_move_xyz.setEnabled(True)
+                self.btn_import_gcode.setEnabled(True)
+                self.statusBar.showMessage("✅ Exécution du fichier G-Code terminée.")
+                
+                # Rétablir le bouton en mode manuel classique
+                self.btn_move_xyz.setText("Calculer & Exécuter la Trajectoire")
+                self.btn_move_xyz.clicked.disconnect()
+                self.btn_move_xyz.clicked.connect(self.send_cartesian_target)
+                
+        except Exception as e:
+            if hasattr(self, 'anim_timer'): self.anim_timer.stop()
+            self.btn_move_xyz.setEnabled(True)
+            self.btn_import_gcode.setEnabled(True)
+            print(f"Erreur d'exécution du buffer : {e}")
+
+
     def closeEvent(self, event):
         """S'assure que la caméra se coupe si l'utilisateur ferme la fenêtre"""
         if hasattr(self, 'cam_thread'):
@@ -773,7 +961,14 @@ if __name__ == "__main__":
     d = [50, 0, 0, 10, 0]
 
     # 1. Modèle mathématique
-    robot5DoF = LM.Robot(nb_joint, phis, r, d)
+    limites_standards = np.array([
+        [-np.pi,           np.pi],           # Axe 1 : Base (-180° à +180°)
+        [-np.pi/2,         np.pi/2],         # Axe 2 : Épaule (-90° à +90°)
+        [-2*np.pi/3,       2*np.pi/3],       # Axe 3 : Coude (-120° à +120°)
+        [-11*np.pi/18,     11*np.pi/18],     # Axe 4 : Poignet (-110° à +110°)
+        [-np.pi,           np.pi]            # Axe 5 : Outil / Torsion (-180° à +180°)
+    ])
+    robot5DoF = LM.Robot(nb_joint, phis, r, d ,limits=limites_standards )
     
     app = QApplication(sys.argv)
     
